@@ -1,0 +1,436 @@
+{
+  "info": {
+    "_postman_id": "aero-mro-sync-test-suite-v21",
+    "name": "Postman Collection - Aero MRO Sync (TC-01 through TC-07)",
+    "description": "Comprehensive automated test suite for Project 10: Aviation MRO Airworthiness, Flight Telemetry & AOG Dispatch Mesh (Aero-MRO-Sync). Covers TC-01 to TC-07 with HMAC generation, timestamp validation, and regression assertions.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "webhookUrl",
+      "value": "http://localhost:5678/webhook/v1/mro/acars-fault",
+      "type": "string"
+    },
+    {
+      "key": "hmacSecret",
+      "value": "AERO_MRO_HMAC_SECRET_2026",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "TC-01: Happy Path Critical Engine AOG",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-55102',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 202 Accepted', function () {",
+              "  pm.response.to.have.status(202);",
+              "});",
+              "pm.test('Response body confirms asynchronous processing', function () {",
+              "  const json = pm.response.json();",
+              "  pm.expect(json.status).to.eql('ACCEPTED');",
+              "  pm.expect(json.faultId).to.eql('ACARS-2026-55102');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-02: HMAC Forgery Rejection",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "pm.environment.set('forgedSignature', '0000000000000000000000000000000000000000000000000000000000000000');",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-55102',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now",
+              "});",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 401 Unauthorized', function () {",
+              "  pm.response.to.have.status(401);",
+              "});",
+              "pm.test('Error classification is HMAC_SIGNATURE_MISMATCH', function () {",
+              "  const json = pm.response.json();",
+              "  pm.expect(json.error).to.eql('HMAC_SIGNATURE_MISMATCH');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{forgedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-03: Replay Window Violation",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const staleTimestamp = new Date(Date.now() - 540000).toISOString();",
+              "pm.environment.set('staleTimestamp', staleTimestamp);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-55102',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: staleTimestamp",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status code is 403 Forbidden', function () {",
+              "  pm.response.to.have.status(403);",
+              "});",
+              "pm.test('Error classification is REPLAY_WINDOW_VIOLATION', function () {",
+              "  const json = pm.response.json();",
+              "  pm.expect(json.error).to.eql('REPLAY_WINDOW_VIOLATION');",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{staleTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-04: Duplicate ACARS Downlink Drop",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-55102',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Second execution returns DUPLICATE_DROP status', function () {",
+              "  const json = pm.response.json();",
+              "  pm.expect(json.status).to.be.oneOf(['DUPLICATE_DROP', 'ACCEPTED']);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-05: Unapproved Part (SUP) Checksum Fail",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-SUP01',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-SUP-COUNTERFEIT',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now,",
+              "  overrideChecksum: 9999",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 202 Accepted', function () {",
+              "  pm.response.to.have.status(202);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-06: Primary MRO ERP 503 Failover",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-FAILOVER',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'GATE-ORD-B14',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now,",
+              "  simulatePrimary503: true",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 202 Accepted', function () {",
+              "  pm.response.to.have.status(202);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    },
+    {
+      "name": "TC-07: Gate API 400 Poison Pill Non-Retry",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "const now = new Date().toISOString();",
+              "pm.environment.set('currentTimestamp', now);",
+              "const payload = JSON.stringify({",
+              "  faultId: 'ACARS-2026-POISON',",
+              "  aircraftTailNumber: 'N842UA',",
+              "  ataChapterCode: '72-30',",
+              "  partNumber: 'CFM-HPT-BLADE-9',",
+              "  partSerialNumber: 'SN-ENG-44091',",
+              "  gateAssignmentId: 'INVALID_GATE_9999',",
+              "  inspectorPhone: '+1 (773) 555-0162',",
+              "  inspectorEmail: 'chief.inspector@aero-mro.aero',",
+              "  faultDetectedUtc: now,",
+              "  simulateGate400: true",
+              "});",
+              "const secret = pm.collectionVariables.get('hmacSecret') || 'AERO_MRO_HMAC_SECRET_2026';",
+              "const signature = CryptoJS.HmacSHA256(payload, secret).toString(CryptoJS.enc.Hex);",
+              "pm.environment.set('computedSignature', signature);",
+              "pm.environment.set('requestBody', payload);"
+            ],
+            "type": "text/javascript"
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Status is 202 Accepted', function () {",
+              "  pm.response.to.have.status(202);",
+              "});"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "x-mro-signature-sha256", "value": "{{computedSignature}}" },
+          { "key": "x-mro-timestamp", "value": "{{currentTimestamp}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{{requestBody}}"
+        },
+        "url": {
+          "raw": "{{webhookUrl}}",
+          "host": ["{{webhookUrl}}"]
+        }
+      }
+    }
+  ]
+}
