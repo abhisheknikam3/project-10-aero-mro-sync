@@ -1,15 +1,14 @@
 # Project 10: Aviation MRO Airworthiness, Flight Telemetry & AOG Dispatch Mesh (Aero-MRO-Sync)
 
 **Document Code:** `N8N-API-AERO-PRJ-10`  
-**Standard:** 100% Production-Readiness Specification (100.0 / 100.0 Target)  
+**Standard:** Enterprise Production Architecture Specification  
 **Author / Lead Integration Engineer:** Abhishek Nikam (`abhishek.n@tayanasolutions.com`)  
-**Lead Evaluator & Reviewer:** Deepesh Jain (Course Lead / Lead Evaluator)  
 **Repository:** `https://github.com/abhisheknikam3/project-10-aero-mro-sync`  
 **Primary Workflow File:** `Aero_MRO_Sync_Production_Mesh.json`  
 
 ---
 
-## 1. Executive Charter & Production Refinement Overview
+## 1. Executive Charter & System Overview
 
 Commercial airlines incur over **\$150,000 per hour** when an aircraft enters **AOG (Aircraft on Ground)** status due to unscheduled component failures. The **Aero-MRO-Sync** platform coordinates:
 - ACARS ground-station fault telemetry ingestion.
@@ -22,18 +21,6 @@ Commercial airlines incur over **\$150,000 per hour** when an aircraft enters **
 - Multi-verb REST CRUD coordination (POST, PUT, PATCH, DELETE).
 - RFC 5988 cursor-based telemetry harvesting.
 - PostgreSQL audit persistence, automated Dead-Letter Queue (DLQ), and multi-channel Slack alerting.
-
-### Feedback Remediation Matrix (Elevating Score from 75/100 to 100/100)
-
-| Evaluation Category | Original Score | Refinement Implemented | 100/100 Target Score |
-| :--- | :---: | :--- | :---: |
-| **1. Cryptographic Authentication & Zero-Trust** | 15.0 / 20.0 | Removed `\|\| true` bypass in replay window; actively enforce $\pm 300\text{s}$ drift check; return computed `isDuplicate` boolean; moved HMAC secret to `$env['AERO_MRO_HMAC_SECRET_2026']`; integrated explicit `Respond to Webhook` nodes for HTTP 202, 401, and 403. | **20.0 / 20.0** |
-| **2. Dual-Constraint RUL Computation Engine** | 19.0 / 20.0 | Preserved rigorous dual-decay logic: $\text{EffectiveRUL}\% = \min(\text{RUL}_{\text{hours}}, \text{RUL}_{\text{cycles}}) = \min(4.0\%, 3.0\%) = 3.0\% \le 5.0\%$, correctly triggering mandatory AOG grounding. | **20.0 / 20.0** |
-| **3. Geolocation Logistics & Great-Circle Routing** | 14.0 / 15.0 | Implemented Great-Circle Haversine algorithm ($R = 6371\text{ km}$) strictly filtering depots where `certifiedStock > 0`. Nearest hub selected: **DTW** (376.5 km) over ATL (976.2 km) and LAX (2806.8 km). Validated +E.164 phone and RFC 5322 email hygiene. | **15.0 / 15.0** |
-| **4. Regulatory Compliance & Anti-SUP Verification** | 12.0 / 15.0 | Replaced static string evaluation with native n8n **Extract from File (PDF)** node operating on `faa_8130_3_release_cert.pdf`. Active checksum matching (`10000 === 10000`) quarantines unapproved parts (SUPs) to DLQ without reserving inventory. | **15.0 / 15.0** |
-| **5. HITL Architecture & RESTful Dispatch Mesh** | 10.0 / 20.0 | Replaced static hardcoded Set node with real **Wait (Webhook Resume) / HITL Approval Gate**. Replaced mocked Code nodes with live **HTTP Request** nodes executing GraphQL and 4 REST verbs (`POST` work order, `PUT` airworthiness, `PATCH` reserve serial, `DELETE` release gate). | **20.0 / 20.0** |
-| **6. Enterprise Observability & Multi-Channel Alerting** | 5.0 / 10.0 | Connected live PostgreSQL nodes writing to `aviation_mro_events`, `mro_api_telemetry`, and `mro_dead_letter_queue`. Added automated Slack alert node to `#aog-maintenance-control`. Cleared all `pinData` for live testing. | **10.0 / 10.0** |
-| **Total** | **75.0 / 100.0** | **Complete Production-Grade Engineering Compliance** | **100.0 / 100.0** |
 
 ---
 
@@ -95,7 +82,7 @@ Commercial airlines incur over **\$150,000 per hour** when an aircraft enters **
 
 ### 3.1 Phase 1 & 2: Cryptographic Zero-Trust & Replay Enforcement
 - **Timing-Safe HMAC:** Validates `x-mro-signature-sha256` using `crypto.timingSafeEqual` comparing against an HMAC-SHA256 digest computed from the raw inbound body and `$env['AERO_MRO_HMAC_SECRET_2026']`.
-- **Active $\pm 300\text{s}$ Replay Window:** Replaced `|| true` bypass with:
+- **Active $\pm 300\text{s}$ Replay Window:** Replay protection actively enforces a maximum timestamp drift of 300,000ms:
   ```javascript
   const driftMs = Math.abs(Date.now() - new Date(inboundTimestampStr).getTime());
   if (driftMs > 300000) {
@@ -106,7 +93,7 @@ Commercial airlines incur over **\$150,000 per hour** when an aircraft enters **
 - **Idempotency Mutex:** Uses `$getWorkflowStaticData('global').seenFaults` indexed by the SHA-256 hash of `faultId + aircraftTailNumber` to drop duplicate broadcasts.
 
 ### 3.2 Phase 3: GraphQL Fleet & Depots Query
-Replaced static simulation with an active **HTTP Request** node executing POST against the GraphQL service:
+Uses an active **HTTP Request** node executing POST against the GraphQL service:
 ```graphql
 query GetFleetStatus($tail: String!, $part: String!) {
   fleetPartStatus(tailNumber: $tail, partNumber: $part) {
@@ -157,7 +144,7 @@ query GetFleetStatus($tail: String!, $part: String!) {
 Modeled with a native n8n **Wait node (Webhook Callback)** requiring Chief Inspector authorization prior to executing fleet groundings or gate releases.
 
 ### 3.6 Phase 8 & 9: Coordinated Multi-Method REST CRUD Mesh
-Replaced static Code simulations with 4 active **HTTP Request** nodes:
+Implemented via 4 active **HTTP Request** nodes:
 1. `POST /v1/aog/work-orders` $\rightarrow$ Dispatches expedited courier from DTW hub (`201 Created`).
 2. `PUT /v1/fleet/N842UA/airworthiness` $\rightarrow$ Sets aircraft status to `AOG_GROUNDED` (`200 OK`).
 3. `PATCH /v1/parts/SN-SPARE-DTW04/status` $\rightarrow$ Locks spare inventory to `RESERVED_AOG` (`200 OK`).
@@ -185,16 +172,16 @@ Replaced static Code simulations with 4 active **HTTP Request** nodes:
 
 ---
 
-## 5. Evaluator Defense & Oral Grilling Guide (Deepesh Jain)
+## 5. Architecture & Technical FAQ
 
-### Question 1: "Why does EffectiveRUL% take Math.min(hoursRulPct, cyclesRulPct) instead of averaging them?"
-> **Answer:** Aviation Life-Limited Parts (LLPs) are strictly governed by whichever regulatory ceiling arrives first. Short-haul aircraft perform frequent takeoffs and landings, exhausting thermal/stress cycles long before flight hours, whereas long-haul widebodies accumulate high flight hours with few cycles. Averaging the two would produce a dangerously inflated figure and violate FAA/EASA Part 145 airworthiness directives. Taking the mathematical minimum guarantees absolute regulatory compliance.
+### Why does EffectiveRUL% take Math.min(hoursRulPct, cyclesRulPct) instead of averaging them?
+> Aviation Life-Limited Parts (LLPs) are strictly governed by whichever regulatory ceiling arrives first. Short-haul aircraft perform frequent takeoffs and landings, exhausting thermal and pressurization cycles long before flight hours; long-haul widebodies accumulate high flight hours with relatively few cycles. Averaging them would produce an artificially inflated figure and violate FAA/EASA Part 145 airworthiness directives. Taking the mathematical minimum guarantees absolute regulatory airworthiness compliance.
 
-### Question 2: "Why must your Haversine hub selector filter certifiedStock > 0 before computing the minimum distance?"
-> **Answer:** If we compute the nearest hub purely by spatial proximity without verifying certified inventory, the algorithm would select an airport warehouse with zero certified stock. Dispatching an AOG courier to an empty depot wastes critical hours, compounding airline operational losses beyond \$150,000/hour while passengers remain stranded.
+### Why must your Haversine hub selector filter certifiedStock > 0 before computing the minimum distance?
+> If we calculate nearest-hub distance without filtering for stock, the algorithm would select the geographically closest airport warehouse even if it has zero certified parts. Dispatching an AOG courier to an empty depot wastes critical hours, compounding commercial airline losses beyond \$150,000/hour while passengers remain stranded.
 
-### Question 3: "Why do we parse and verify the FAA Form 8130-3 PDF checksum before issuing PATCH /parts/{serial}/status?"
-> **Answer:** Installing an unapproved or counterfeit component (Suspected Unapproved Part / SUP) onto a commercial airliner is a federal safety crime. Validating the 8130-3 airworthiness certificate checksum ensures that the physical serial matches certified maintenance records before the ERP reserves and assigns that inventory to an AOG work order.
+### Why do we parse and verify the FAA Form 8130-3 PDF checksum before issuing PATCH /parts/{serial}/status?
+> Installing an unapproved or counterfeit component (Suspected Unapproved Part / SUP) onto a commercial airliner is a federal safety crime. Verifying the 8130-3 airworthiness certificate checksum ensures that the physical serial and authorized cycles match certified maintenance records before the ERP locks and reserves that inventory for an AOG work order.
 
 ---
 
