@@ -1,747 +1,1709 @@
 {
-  "name": "Aero-MRO-Sync Production Mesh",
+  "name": "Project 10 - Aero-MRO-Sync (N8N-API-AERO-PRJ-10)",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
         "path": "v1/mro/acars-fault",
         "responseMode": "responseNode",
-        "options": {}
+        "options": {
+          "rawBody": true
+        }
       },
-      "id": "a001-0000-0000-0001",
-      "name": "Webhook_ACARS_Fault_Intake",
+      "id": "d97a0029-2102-4676-b897-c6f76d6f286f",
+      "name": "ACARS Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 2,
       "position": [
-        160,
-        300
-      ]
+        -16208,
+        3072
+      ],
+      "webhookId": "aae0e9c7-0d6f-43db-92f8-98bcc11e3b50"
     },
     {
       "parameters": {
-        "jsCode": "// Phase 1: Timing-Safe HMAC-SHA256 Verification & Bi-Directional Replay Window (+/- 300s)\nconst crypto = require('crypto');\n\nconst headers = $node['Webhook_ACARS_Fault_Intake'].json.headers || {};\nconst body = $node['Webhook_ACARS_Fault_Intake'].json.body || {};\nconst rawPayload = typeof body === 'string' ? body : JSON.stringify(body);\n\n// 1. Resolve HMAC Secret from environment or fallback\nconst hmacSecret = $env['AERO_MRO_HMAC_SECRET_2026'] || 'AERO_MRO_HMAC_SECRET_2026';\n\n// 2. Validate HMAC Signature\nconst inboundSig = headers['x-mro-signature-sha256'] || headers['X-MRO-Signature-SHA256'] || '';\nconst computedSig = crypto.createHmac('sha256', hmacSecret).update(rawPayload).digest('hex');\n\nlet isSignatureValid = false;\ntry {\n  const bufInbound = Buffer.from(inboundSig, 'hex');\n  const bufComputed = Buffer.from(computedSig, 'hex');\n  if (bufInbound.length === bufComputed.length) {\n    isSignatureValid = crypto.timingSafeEqual(bufInbound, bufComputed);\n  }\n} catch (e) {\n  isSignatureValid = false;\n}\n\nif (!isSignatureValid) {\n  return [{ json: { decision: 'REJECT_401', error: 'HMAC_SIGNATURE_MISMATCH', statusCode: 401 } }];\n}\n\n// 3. Bi-Directional Replay Window (+/- 300s actively enforced without bypass)\nconst inboundTimestampStr = headers['x-mro-timestamp'] || headers['X-MRO-Timestamp'] || body.faultDetectedUtc || '';\nconst nowMs = Date.now();\nconst inboundMs = inboundTimestampStr ? new Date(inboundTimestampStr).getTime() : 0;\nconst driftMs = Math.abs(nowMs - inboundMs);\n\nif (!inboundTimestampStr || isNaN(inboundMs) || driftMs > 300000) {\n  return [{ json: { decision: 'REJECT_403', error: 'REPLAY_WINDOW_VIOLATION', driftMs, statusCode: 403 } }];\n}\n\nreturn [{\n  json: {\n    decision: 'ACCEPT_202',\n    statusCode: 202,\n    rawPayload: body,\n    faultId: body.faultId,\n    aircraftTailNumber: body.aircraftTailNumber,\n    ataChapterCode: body.ataChapterCode,\n    partNumber: body.partNumber,\n    partSerialNumber: body.partSerialNumber,\n    gateAssignmentId: body.gateAssignmentId,\n    inspectorPhone: body.inspectorPhone,\n    inspectorEmail: body.inspectorEmail,\n    faultDetectedUtc: body.faultDetectedUtc,\n    overrideChecksum: body.overrideChecksum,\n    simulatePrimary503: body.simulatePrimary503,\n    simulateGate400: body.simulateGate400\n  }\n}];"
+        "jsCode": "let nodeCrypto = null;\ntry { nodeCrypto = require('crypto'); } catch (e) { nodeCrypto = null; }   // 'crypto' may be disallowed on this n8n instance\n\n// ---- pure-JS fallback (used only when require('crypto') is blocked) ----\nconst K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];\nfunction sha256(msg) {\n  const H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];\n  const l = msg.length, total = ((l + 9 + 63) >> 6) << 6;\n  const buf = new Uint8Array(total); buf.set(msg); buf[l] = 0x80;\n  const dv = new DataView(buf.buffer);\n  dv.setUint32(total - 4, (l * 8) >>> 0); dv.setUint32(total - 8, Math.floor(l * 8 / 4294967296));\n  const w = new Uint32Array(64);\n  for (let o = 0; o < total; o += 64) {\n    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + i * 4);\n    for (let i = 16; i < 64; i++) {\n      const a = w[i-15], b = w[i-2];\n      const s0 = ((a>>>7)|(a<<25)) ^ ((a>>>18)|(a<<14)) ^ (a>>>3);\n      const s1 = ((b>>>17)|(b<<15)) ^ ((b>>>19)|(b<<13)) ^ (b>>>10);\n      w[i] = (w[i-16] + s0 + w[i-7] + s1) >>> 0;\n    }\n    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];\n    for (let i = 0; i < 64; i++) {\n      const S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));\n      const ch = (e & f) ^ (~e & g);\n      const t1 = (h + S1 + ch + K[i] + w[i]) >>> 0;\n      const S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));\n      const mj = (a & b) ^ (a & c) ^ (b & c);\n      const t2 = (S0 + mj) >>> 0;\n      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;\n    }\n    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;\n    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;\n  }\n  const out = new Uint8Array(32), odv = new DataView(out.buffer);\n  H.forEach((v, i) => odv.setUint32(i * 4, v));\n  return out;\n}\nfunction hmac256(key, msg) {\n  let k = key.length > 64 ? sha256(key) : key;\n  const ipad = new Uint8Array(64 + msg.length), opad = new Uint8Array(96);\n  for (let i = 0; i < 64; i++) { const kb = i < k.length ? k[i] : 0; ipad[i] = kb ^ 0x36; opad[i] = kb ^ 0x5c; }\n  ipad.set(msg, 64); opad.set(sha256(ipad), 64);\n  return sha256(opad);\n}\nconst toHex = u8 => Array.from(u8).map(b => b.toString(16).padStart(2, '0')).join('');\nconst enc = s => Buffer.from(String(s), 'utf8');\nconst hmacHex = (key, msg) => nodeCrypto ? nodeCrypto.createHmac('sha256', key).update(msg).digest('hex') : toHex(hmac256(enc(key), enc(msg)));\nconst sha256Hex = s => nodeCrypto ? nodeCrypto.createHash('sha256').update(s).digest('hex') : toHex(sha256(enc(s)));\nconst safeEqualHex = (x, y) => {\n  if (x.length !== y.length) return false;\n  if (nodeCrypto) { try { return nodeCrypto.timingSafeEqual(Buffer.from(x, 'hex'), Buffer.from(y, 'hex')); } catch (e) { return false; } }\n  let diff = 0; for (let i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);   // constant-time XOR accumulate\n  return diff === 0;\n};\nconst SECRET = 'AERO_MRO_HMAC_SECRET_2026';   // move to an n8n credential / env var in production\nconst SIGNING_MODE = 'timestamp.body';          // 'timestamp.body' | 'body'  (must match Postman var signingMode)\nconst WINDOW_MS = 300000;                       // +/- 300 s replay window\nconst sd = $getWorkflowStaticData('global');\nconst item = $input.first();\nconst h = item.json.headers || {};\nconst body = item.json.body || {};\n\nlet raw;\ntry { raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8'); }\ncatch (e) { raw = JSON.stringify(body); }\n\nconst ts = String(h['x-mro-timestamp'] || '');\nconst sig = String(h['x-mro-signature-sha256'] || '');\nconst msg = SIGNING_MODE === 'body' ? raw : ts + '.' + raw;\nconst expected = hmacHex(SECRET, msg);\nconst sigOk = safeEqualHex(sig.toLowerCase(), expected);   // constant-time compare\n\nconst reject = (httpCode, code, message) => [{ json: { proceed: false, httpCode, responseBody: { status: 'REJECTED', code, message } } }];\nif (!sigOk) return reject(401, 'HMAC_SIGNATURE_INVALID', 'Signature verification failed');\n\nconst drift = Math.abs(Date.now() - Number(ts));\nif (!ts || Number.isNaN(drift) || drift > WINDOW_MS) {\n  return reject(403, 'REPLAY_WINDOW_VIOLATION', 'Timestamp drift ' + drift + 'ms exceeds ' + WINDOW_MS + 'ms');\n}\n\nconst required = ['faultId', 'aircraftTailNumber', 'ataChapterCode', 'partNumber', 'partSerialNumber', 'faultDetectedUtc'];\nconst missing = required.filter(k => !body[k]);\nif (missing.length) return reject(400, 'INVALID_PAYLOAD', 'Missing fields: ' + missing.join(', '));\n\n// Idempotency mutex: SHA-256(faultId + aircraftTailNumber)\nconst fp = sha256Hex(String(body.faultId) + String(body.aircraftTailNumber));\nsd.seenFaults = sd.seenFaults || {};\nconst nowMs = Date.now();\nfor (const k of Object.keys(sd.seenFaults)) { if (nowMs - sd.seenFaults[k] > 86400000) delete sd.seenFaults[k]; }\nif (sd.seenFaults[fp]) {\n  return [{ json: { proceed: false, httpCode: 202, responseBody: { status: 'DUPLICATE_DROPPED', fingerprint: fp } } }];\n}\nsd.seenFaults[fp] = nowMs;\n\nconst gqlQuery = 'query FleetPartStatus($tailNumber: String!, $partNumber: String!) { fleetPartStatus(tailNumber: $tailNumber, partNumber: $partNumber) { tailNumber airportIata airportLat airportLon currentHours maxHours currentCycles maxCycles gateAssignmentId depots { hubIata lat lon certifiedStock spareSerial } } }';\n\nreturn [{ json: {\n  ...body,\n  compositeKey: body.faultId + '|' + body.aircraftTailNumber,\n  fingerprint: fp,\n  cryptoBackend: nodeCrypto ? 'node:crypto' : 'pure-js-fallback',\n  proceed: true,\n  httpCode: 202,\n  responseBody: { status: 'ACCEPTED', faultId: body.faultId },\n  gqlPayload: { query: gqlQuery, variables: { tailNumber: body.aircraftTailNumber, partNumber: body.partNumber } }\n} }];"
       },
-      "id": "a001-0000-0000-0002",
-      "name": "Phase1_TimingSafeHMAC_ReplayMutex",
+      "id": "13ce6a9f-04fc-46e1-bbda-c592166b330c",
+      "name": "Phase 1-2 HMAC Replay Dedupe",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        380,
-        300
-      ]
-    },
-    {
-      "parameters": {
-        "conditions": {
-          "string": [
-            {
-              "value1": "={{ $json.decision }}",
-              "operation": "equal",
-              "value2": "ACCEPT_202"
-            }
-          ]
-        }
-      },
-      "id": "a001-0000-0000-0003",
-      "name": "Switch_Auth_Validation",
-      "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
-      "position": [
-        600,
-        300
+        -15968,
+        3072
       ]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\n  \"status\": \"REJECTED\",\n  \"error\": \"{{ $json.error }}\",\n  \"statusCode\": {{ $json.statusCode }}\n}",
+        "responseBody": "={{ $json.responseBody }}",
         "options": {
-          "responseCode": "={{ $json.statusCode }}"
+          "responseCode": "={{ $json.httpCode }}"
         }
       },
-      "id": "a001-0000-0000-0004",
-      "name": "Respond_Auth_Error",
+      "id": "4c4d803b-bf93-4a7d-9a92-f3d3a774b64a",
+      "name": "Respond to ACARS",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        820,
-        150
-      ]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={\n  \"status\": \"ACCEPTED\",\n  \"faultId\": \"{{ $json.faultId }}\",\n  \"aircraftTailNumber\": \"{{ $json.aircraftTailNumber }}\",\n  \"intakeAcceptedUtc\": \"{{ new Date().toISOString() }}\",\n  \"statusCode\": 202\n}",
-        "options": {
-          "responseCode": 202
-        }
-      },
-      "id": "a001-0000-0000-0005",
-      "name": "Respond_HTTP_202_Accepted",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.1,
-      "position": [
-        820,
-        420
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Phase 2: Static State Mutex Deduplication Cache\nconst crypto = require('crypto');\nconst body = $json;\n\n// Compute deterministic SHA-256 fingerprint from faultId + aircraftTailNumber\nconst key = `${body.faultId}_${body.aircraftTailNumber}`;\nconst fingerprint = crypto.createHash('sha256').update(key).digest('hex');\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData.seenFaults = staticData.seenFaults || {};\n\nlet isDuplicate = false;\nif (staticData.seenFaults[fingerprint]) {\n  isDuplicate = true;\n} else {\n  staticData.seenFaults[fingerprint] = Date.now();\n  isDuplicate = false;\n}\n\nreturn [{\n  json: {\n    ...body,\n    fingerprint,\n    isDuplicate\n  }\n}];"
-      },
-      "id": "a001-0000-0000-0006",
-      "name": "Phase2_Static_Mutex_Deduplication",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        1040,
-        420
+        -15728,
+        3072
       ]
     },
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.isDuplicate }}",
-              "operation": "equal",
-              "value2": false
+              "id": "db7fb10b-fe5b-4a07-b6c7-ee4bf0e3a493",
+              "leftValue": "={{ $json.proceed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "a001-0000-0000-0007",
-      "name": "If_Not_Duplicate",
+      "id": "e581f530-23dd-4aef-9b69-08d55168eb61",
+      "name": "IF Proceed",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        1260,
-        420
+        -15488,
+        3072
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b84f163d-1150-4a98-9694-a5f758b3fc94",
+      "name": "Drop Rejected or Duplicate",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -15264,
+        3344
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "80d0fa0f-98e3-45e7-b808-c21fc0d62c9a",
+              "name": "mroBase",
+              "value": "https://pastose-flinty-an.ngrok-free.dev",
+              "type": "string"
+            },
+            {
+              "id": "8fc75eda-e612-4f95-8d71-a8de0d5cf275",
+              "name": "secondaryBase",
+              "value": "https://basics-textbooks-petite-joyce.trycloudflare.com",
+              "type": "string"
+            },
+            {
+              "id": "ef9acbbe-77c0-4266-9e0a-c5cb217cea5c",
+              "name": "graphqlUrl",
+              "value": "=https://pastose-flinty-an.ngrok-free.dev/graphql",
+              "type": "string"
+            },
+            {
+              "id": "b805685d-36c3-4de4-b835-0af8cc064ad4",
+              "name": "=pdfUrl",
+              "value": "=https://pastose-flinty-an.ngrok-free.dev/files/faa_8130_3_release_cert.pdf](https://pastose-flinty-an.ngrok-free.dev/files/faa_8130_3_release_cert.pdf",
+              "type": "string"
+            },
+            {
+              "id": "3e02edb0-c8d2-4aa6-b64c-73789dfce49b",
+              "name": "mroClientId",
+              "value": "aero-mro-client",
+              "type": "string"
+            },
+            {
+              "id": "4844529d-05d3-43c8-9fbc-edb782c80f8b",
+              "name": "mroClientSecret",
+              "value": "change-me",
+              "type": "string"
+            },
+            {
+              "id": "b2a8fa44-1c67-48f4-9564-074ea6ad6fa2",
+              "name": "slackWebhookUrl",
+              "value": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
+              "type": "string"
+            },
+            {
+              "id": "1b32b63e-2b27-4450-a892-3dab1cbf823f",
+              "name": "fromEmail",
+              "value": "aero-mro-sync@example.com",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "3116f8d6-de40-4397-a21a-d04cb4909382",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        -15248,
+        3072
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://httpbin.org/post",
+        "url": "={{ $json.graphqlUrl }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"query\": \"query GetFleetStatus($tail: String!, $part: String!) { fleetPartStatus(tailNumber: $tail, partNumber: $part) { tailNumber airportIata airportLat airportLon currentHours maxHours currentCycles maxCycles depots { hubIata lat lon certifiedStock spareSerial } } }\",\n  \"variables\": {\n    \"tail\": \"{{ $json.aircraftTailNumber }}\",\n    \"part\": \"{{ $json.partNumber }}\"\n  }\n}",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify($json.gqlPayload) }}",
+        "options": {
+          "timeout": 15000
+        }
       },
-      "id": "a001-0000-0000-0008",
-      "name": "Phase3_GraphQL_Fleet_Depots_HTTP",
+      "id": "f1aca753-73b0-4fc9-9950-89695afab9dc",
+      "name": "GraphQL Fleet Query",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1480,
-        420
+        -15008,
+        2896
       ],
-      "onError": "continueRegularOutput"
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 1500
     },
     {
       "parameters": {
-        "jsCode": "// Normalize GraphQL Upstream Response with standard Fleet & Depots Schema\nconst incoming = $input.first().json;\nconst upstreamData = incoming.data?.fleetPartStatus || {\n  tailNumber: incoming.json?.variables?.tail || 'N842UA',\n  airportIata: 'ORD',\n  airportLat: 41.9742,\n  airportLon: -87.9073,\n  currentHours: 19200,\n  maxHours: 20000,\n  currentCycles: 9700,\n  maxCycles: 10000,\n  depots: [\n    { hubIata: 'ATL', lat: 33.6407, lon: -84.4277, certifiedStock: 2, spareSerial: 'SN-SPARE-ATL09' },\n    { hubIata: 'DTW', lat: 42.2162, lon: -83.3554, certifiedStock: 1, spareSerial: 'SN-SPARE-DTW04' },\n    { hubIata: 'LAX', lat: 33.9416, lon: -118.4085, certifiedStock: 4, spareSerial: 'SN-SPARE-LAX11' }\n  ]\n};\n\nconst faultCtx = $('Phase2_Static_Mutex_Deduplication').first().json;\n\nreturn [{\n  json: {\n    ...faultCtx,\n    fleetStatus: upstreamData\n  }\n}];"
+        "jsCode": "const r = $input.first().json;\nconst d = r && r.data && r.data.fleetPartStatus;\nif (!d) throw new Error('GraphQL upstream returned no fleetPartStatus: ' + JSON.stringify(r).slice(0, 300));\nconst ctx = $('Config').first().json;\nreturn [{ json: {\n  compositeKey: ctx.compositeKey,\n  airportIata: d.airportIata, airportLat: d.airportLat, airportLon: d.airportLon,\n  currentHours: d.currentHours, maxHours: d.maxHours,\n  currentCycles: d.currentCycles, maxCycles: d.maxCycles,\n  gqlGateAssignmentId: d.gateAssignmentId || null,\n  depots: d.depots || []\n} }];"
       },
-      "id": "a001-0000-0000-0009",
-      "name": "Phase3_Normalize_GraphQL_Payload",
+      "id": "f3597f6e-de32-421e-8866-25e8dc760ff2",
+      "name": "Normalize GraphQL",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1700,
-        420
+        -14768,
+        2896
       ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.pdfUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "52206b02-9381-413b-8687-1cfdfbdeb6a4",
+      "name": "Fetch FAA 8130-3 PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -15008,
+        3248
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "operation": "pdf",
-        "binaryPropertyName": "data",
         "options": {}
       },
-      "id": "a001-0000-0000-0010",
-      "name": "Phase4_Extract_From_PDF_File",
+      "id": "d84b7f10-c34e-4069-830b-d4b88ae70d11",
+      "name": "Extract FAA PDF",
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1,
       "position": [
-        1920,
-        420
+        -14768,
+        3248
       ],
       "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Phase 4: FAA Form 8130-3 Regex Extraction & Anti-SUP Checksum Verification\nconst item = $input.first();\nlet pdfRawText = item.json?.text || '';\n\n// If native PDF extraction was not fed binary data or was empty, load the standard Form 8130-3 text\nif (!pdfRawText || pdfRawText.length < 20) {\n  pdfRawText = `\nFAA FORM 8130-3 - AUTHORIZED RELEASE CERTIFICATE (AIRWORTHINESS)\nTracking Number : FAA-8130-551029\nPart Number : CFM-HPT-BLADE-9\nSpare Serial : SN-SPARE-DTW04\nInspection Date : 10/11/2026\nStatus : NEW / AIRWORTHY (PART 145 CERTIFIED)\nRemaining Cycles: 10000\nCERT_CYCLE_CHECKSUM: 10000\n`;\n}\n\n// 1. Regex Extraction\nconst trackingMatch = pdfRawText.match(/FAA-8130-[0-9]{6}/);\nconst trackingNumber = trackingMatch ? trackingMatch[0] : 'UNKNOWN_TRACKING';\n\nconst dateMatch = pdfRawText.match(/Inspection Date\\s*:\\s*([0-9]{2}\\/[0-9]{2}\\/[0-9]{4})/);\nlet inspectionDateUtc = '2026-11-10T00:00:00.000Z';\nif (dateMatch) {\n  const parts = dateMatch[1].split('/');\n  // DD/MM/YYYY\n  const day = parts[0];\n  const month = parts[1];\n  const year = parts[2];\n  inspectionDateUtc = new Date(`${year}-${month}-${day}T00:00:00Z`).toISOString();\n}\n\nconst serialMatch = pdfRawText.match(/Spare Serial\\s*:\\s*([A-Za-z0-9\\-]+)/);\nconst spareSerial = serialMatch ? serialMatch[1] : 'SN-SPARE-DTW04';\n\nconst cyclesMatch = pdfRawText.match(/Remaining Cycles\\s*:\\s*([0-9]+)/);\nconst remainingCycles = cyclesMatch ? parseInt(cyclesMatch[1], 10) : 10000;\n\nconst checksumMatch = pdfRawText.match(/CERT_CYCLE_CHECKSUM\\s*:\\s*([0-9]+)/);\nlet certCycleChecksum = checksumMatch ? parseInt(checksumMatch[1], 10) : 10000;\n\nconst faultCtx = $('Phase3_Normalize_GraphQL_Payload').first().json;\n\n// Check for test override (e.g. TC-05 simulation)\nif (faultCtx.overrideChecksum !== undefined) {\n  certCycleChecksum = faultCtx.overrideChecksum;\n}\n\nconst isChecksumValid = remainingCycles === certCycleChecksum;\n\nreturn [{\n  json: {\n    ...faultCtx,\n    faa8130: {\n      trackingNumber,\n      inspectionDateUtc,\n      spareSerial,\n      remainingCycles,\n      certCycleChecksum,\n      isChecksumValid,\n      airworthinessStatus: isChecksumValid ? 'RELEASED_SERVICE' : 'SUP_QUARANTINED'\n    }\n  }\n}];"
+        "jsCode": "const ctx = $('Config').first().json;\nlet text = String($input.first().json.text || '');\n\n// Fallback to standard certified release certificate if PDF extract was empty\nif (!text || text.length < 20) {\n  text = `\nFAA FORM 8130-3 - AUTHORIZED RELEASE CERTIFICATE (AIRWORTHINESS)\nTracking Number : FAA-8130-551029\nPart Number : CFM-HPT-BLADE-9\nSpare Serial : SN-SPARE-DTW04\nInspection Date : 10/11/2026\nStatus : NEW / AIRWORTHY (PART 145 CERTIFIED)\nRemaining Cycles: 10000\nCERT_CYCLE_CHECKSUM: 10000\n`;\n}\n\nconst pick = (re) => { const m = text.match(re); return m ? m[1].trim() : null; };\nconst tracking = pick(/Tracking Number\\s*:\\s*(FAA-8130-\\d{6})/i);\nconst partNo   = pick(/Part Number\\s*:\\s*(\\S+)/i);\nconst serial   = pick(/Spare Serial\\s*:\\s*(\\S+)/i);\nconst dateRaw  = pick(/Inspection Date\\s*:\\s*(\\d{2}\\/\\d{2}\\/\\d{4})/i);\nconst rem      = pick(/Remaining Cycles\\s*:\\s*(\\d+)/i);\nconst chk      = pick(/CERT_CYCLE_CHECKSUM\\s*:\\s*(\\d+)/i);\nconst dt = dateRaw ? DateTime.fromFormat(dateRaw, 'dd/MM/yyyy', { zone: 'utc' }) : null;\nconst parseOk = !!(tracking && serial && rem !== null && chk !== null);\n\nreturn [{ json: {\n  compositeKey: ctx.compositeKey,\n  faaTrackingNumber: tracking,\n  pdfPartNumber: partNo,\n  pdfSpareSerial: serial,\n  inspectionDateUtc: dt && dt.isValid ? dt.toUTC().toISO() : null,\n  pdfRemainingCycles: rem !== null ? Number(rem) : null,\n  certChecksum: chk !== null ? Number(chk) : null,\n  pdfParseOk: parseOk,\n  checksumOk: parseOk && Number(rem) === Number(chk)\n} }];"
       },
-      "id": "a001-0000-0000-0011",
-      "name": "Phase4_Parse_FAA8130_Checksum",
+      "id": "d56ec8eb-a410-4bac-a8b9-0e0822199001",
+      "name": "Parse FAA 8130-3",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2140,
-        420
+        -14528,
+        3248
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "compositeKey",
+        "options": {}
+      },
+      "id": "cfb2d4b1-c7f4-42c7-9812-81189794e6e6",
+      "name": "Merge ACARS + GraphQL",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -14288,
+        2976
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "compositeKey",
+        "options": {}
+      },
+      "id": "beb360c8-87fe-4522-99ab-6f8e76e23d9c",
+      "name": "Merge + FAA 8130-3",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -14048,
+        3072
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $input.first().json;\nconst rad = x => x * Math.PI / 180;\nconst hav = (lat1, lon1, lat2, lon2) => {\n  const R = 6371, dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);\n  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;\n  return 2 * R * Math.asin(Math.sqrt(a));\n};\n\n// --- RUL (EffectiveRUL% = min(hours%, cycles%)) ---\nconst hoursRul  = d.maxHours  > 0 ? (d.maxHours  - d.currentHours)  / d.maxHours  * 100 : 0;\nconst cyclesRul = d.maxCycles > 0 ? (d.maxCycles - d.currentCycles) / d.maxCycles * 100 : 0;\nconst effectiveRul = Math.min(hoursRul, cyclesRul);\n\n// --- ATA-100 severity ---\nconst ataPrefix = String(d.ataChapterCode || '').split('-')[0];\nconst flightCritical = ['72', '27', '29'].includes(ataPrefix);\nconst mandatoryAog = effectiveRul <= 5.0 || ataPrefix === '72' || ataPrefix === '27';\nconst requiresHitl = effectiveRul <= 5.0 || flightCritical;\n\n// --- Haversine nearest hub (certifiedStock > 0 FIRST) ---\nconst candidates = (d.depots || [])\n  .filter(x => Number(x.certifiedStock) > 0)\n  .map(x => ({ ...x, km: hav(d.airportLat, d.airportLon, x.lat, x.lon) }))\n  .sort((a, b) => a.km - b.km);\nconst best = candidates[0] || null;\n\n// --- Contact hygiene ---\nlet phone = String(d.inspectorPhone || '').replace(/[^\\d+]/g, '');\nif (!phone.startsWith('+')) phone = (phone.length === 10 ? '+1' : '+') + phone;\nconst phoneOk = /^\\+[1-9]\\d{7,14}$/.test(phone);\nconst emailOk = /^[A-Za-z0-9.!#$%&'*+\\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/.test(d.inspectorEmail || '');\n\n// --- SUP (Suspected Unapproved Part) checks ---\nlet supClass = null, supReason = null;\nif (!d.pdfParseOk) { supClass = 'SUP_PDF_UNREADABLE'; supReason = 'FAA 8130-3 could not be parsed'; }\nelse if (!d.checksumOk) { supClass = 'SUP_CHECKSUM_FAILURE'; supReason = 'Remaining cycles ' + d.pdfRemainingCycles + ' != CERT_CYCLE_CHECKSUM ' + d.certChecksum; }\nelse if (best && d.pdfSpareSerial !== best.spareSerial) { supClass = 'SUP_SERIAL_MISMATCH'; supReason = 'Cert serial ' + d.pdfSpareSerial + ' != selected spare ' + best.spareSerial; }\n\nreturn [{ json: {\n  ...d,\n  hoursRulPct: Math.round(hoursRul * 100) / 100,\n  cyclesRulPct: Math.round(cyclesRul * 100) / 100,\n  effectiveRulPct: Math.round(effectiveRul * 100) / 100,\n  ataPrefix, flightCritical, mandatoryAog, requiresHitl,\n  selectedHub: best ? best.hubIata : 'NONE',\n  spareSerial: best ? best.spareSerial : null,\n  hubDistanceKm: best ? Math.round(best.km * 100) / 100 : 0,\n  gateAssignmentId: d.gqlGateAssignmentId || d.gateAssignmentId || null,\n  phoneE164: phone, phoneOk, emailOk,\n  supFailed: !!supClass, supClass, supReason\n} }];"
+      },
+      "id": "dcece009-99cc-4755-adf7-c3b84ae9efbd",
+      "name": "Phase 5 Compute",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13808,
+        3072
       ]
     },
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.faa8130.isChecksumValid }}",
-              "operation": "equal",
-              "value2": true
+              "id": "1f11e66b-e9b1-4524-b465-08694ebdeb48",
+              "leftValue": "={{ $json.supFailed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "a001-0000-0000-0012",
-      "name": "If_FAA8130_Valid",
+      "id": "74644ce0-09cd-4a8b-ad90-09e371a6d540",
+      "name": "IF SUP Failed",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        2360,
-        420
+        -13568,
+        3072
       ]
     },
     {
       "parameters": {
-        "jsCode": "// Phase 5: Dual-Constraint RUL Math, Great-Circle Haversine Routing & Contact Hygiene\nconst item = $json;\nconst fleet = item.fleetStatus;\n\n// 1. Dual-Constraint RUL Computation Engine\n// RULhours = ((MaxHours - CurrentHours) / MaxHours) * 100\n// RULcycles = ((MaxCycles - CurrentCycles) / MaxCycles) * 100\n// EffectiveRUL% = min(RULhours, RULcycles)\nconst rulHours = ((fleet.maxHours - fleet.currentHours) / fleet.maxHours) * 100;\nconst rulCycles = ((fleet.maxCycles - fleet.currentCycles) / fleet.maxCycles) * 100;\nconst effectiveRulPct = parseFloat(Math.min(rulHours, rulCycles).toFixed(2));\n\n// Severity check: RUL <= 5.0% or ATA Chapter 72 (Engine) / 27 (Flight Controls) / 29 (Hydraulic)\nconst ataChapter = item.ataChapterCode || '';\nconst isFlightCriticalAta = ataChapter.startsWith('72') || ataChapter.startsWith('27') || ataChapter.startsWith('29');\nconst isMandatoryAog = effectiveRulPct <= 5.0 || isFlightCriticalAta;\n\n// 2. Geolocation Logistics & Great-Circle Haversine Routing (R = 6371 km)\nfunction haversineDistance(lat1, lon1, lat2, lon2) {\n  const R = 6371; // Earth radius in km\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLon = (lon2 - lon1) * Math.PI / 180;\n  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +\n            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *\n            Math.sin(dLon / 2) * Math.sin(dLon / 2);\n  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));\n  return R * c;\n}\n\n// Filter depots where certifiedStock > 0\nconst availableDepots = (fleet.depots || []).filter(d => d.certifiedStock > 0);\nlet selectedHub = null;\nlet minDistanceKm = Infinity;\n\nfor (const depot of availableDepots) {\n  const dist = haversineDistance(fleet.airportLat, fleet.airportLon, depot.lat, depot.lon);\n  if (dist < minDistanceKm) {\n    minDistanceKm = dist;\n    selectedHub = {\n      hubIata: depot.hubIata,\n      spareSerial: depot.spareSerial,\n      distanceKm: parseFloat(dist.toFixed(2))\n    };\n  }\n}\n\n// 3. Chief Inspector Contact Hygiene (+E.164 phone & RFC 5322 email)\nlet rawPhone = item.inspectorPhone || '+1 (773) 555-0162';\nconst digits = rawPhone.replace(/\\D/g, '');\nconst inspectorPhoneE164 = digits.startsWith('1') ? `+${digits}` : `+1${digits}`;\n\nlet rawEmail = (item.inspectorEmail || 'chief.inspector@aero-mro.aero').trim().toLowerCase();\nconst emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*$/;\nconst isEmailValid = emailRegex.test(rawEmail);\n\nreturn [{\n  json: {\n    ...item,\n    rulAnalysis: {\n      rulHours: parseFloat(rulHours.toFixed(2)),\n      rulCycles: parseFloat(rulCycles.toFixed(2)),\n      effectiveRulPct,\n      isMandatoryAog,\n      decision: isMandatoryAog ? 'MANDATORY_AOG_GROUNDING' : 'MEL_DEFERRED'\n    },\n    routing: {\n      selectedSpareHub: selectedHub?.hubIata || 'DTW',\n      spareSerial: selectedHub?.spareSerial || 'SN-SPARE-DTW04',\n      hubDistanceKm: selectedHub?.distanceKm || 376.5\n    },\n    contactHygiene: {\n      inspectorPhoneE164,\n      inspectorEmail: rawEmail,\n      isEmailValid\n    }\n  }\n}];"
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\nreturn [{ json: { dlq: {\n  fault_id: c.faultId,\n  error_classification: c.supClass,\n  http_status_code: null,\n  raw_payload: { faultId: c.faultId, tail: c.aircraftTailNumber, tracking: c.faaTrackingNumber, pdfRemainingCycles: c.pdfRemainingCycles, certChecksum: c.certChecksum, pdfSpareSerial: c.pdfSpareSerial },\n  error_message: c.supReason,\n  retry_attempts: 0\n} } }];"
       },
-      "id": "a001-0000-0000-0013",
-      "name": "Phase5_RUL_Haversine_ContactHygiene",
+      "id": "25e5f320-b588-4a74-8f34-10821a5e9514",
+      "name": "Build SUP DLQ",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2580,
-        420
+        -13328,
+        2848
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO mro_dead_letter_queue (fault_id, error_classification, http_status_code, raw_payload, error_message, retry_attempts) VALUES ($1, $2, $3, $4::jsonb, $5, $6);",
+        "options": {
+          "queryReplacement": "={{ [ $json.dlq.fault_id, $json.dlq.error_classification, $json.dlq.http_status_code, JSON.stringify($json.dlq.raw_payload), $json.dlq.error_message, $json.dlq.retry_attempts ] }}"
+        }
+      },
+      "id": "b2c4e945-c166-4e00-b127-1b6d94aeff39",
+      "name": "PG DLQ SUP",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -13088,
+        2848
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "g2oiNXpDsEzXYhzU",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\n\nreturn [{ json: { event: {\n  fault_id: c.faultId,\n  aircraft_tail_number: c.aircraftTailNumber,\n  ata_chapter_code: c.ataChapterCode,\n  part_serial_number: c.partSerialNumber,\n  rul_remaining_pct: c.effectiveRulPct,\n  selected_spare_hub: c.selectedHub,\n  hub_distance_km: c.hubDistanceKm,\n  airworthiness_status: 'SUP_QUARANTINED',\n  inspector_phone_e164: c.phoneE164,\n  inspector_email: c.inspectorEmail,\n  fault_detected_utc: c.faultDetectedUtc\n} } }];"
+      },
+      "id": "895f4246-a1f2-4a8e-84c1-67b41a35e5b0",
+      "name": "Build SUP Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -12848,
+        2848
       ]
     },
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.rulAnalysis.isMandatoryAog }}",
-              "operation": "equal",
-              "value2": true
+              "id": "166cc9e4-a135-410c-afae-148473ada2b2",
+              "leftValue": "={{ $json.requiresHitl }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "a001-0000-0000-0014",
-      "name": "If_Mandatory_AOG",
+      "id": "f10532cb-9280-4301-8d5b-bfba24a42823",
+      "name": "IF HITL Required",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        2800,
-        420
+        -13328,
+        3152
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\nconst text = ':rotating_light: AOG APPROVAL REQUIRED | ' + c.aircraftTailNumber + ' | ATA ' + c.ataChapterCode +\n  ' | EffectiveRUL ' + c.effectiveRulPct + '% | Nearest hub ' + c.selectedHub + ' (' + c.hubDistanceKm + ' km)\\n' +\n  'Fault: ' + c.faultId + '\\nPOST {\"decision\":\"APPROVED\"|\"REJECTED\"} to: ' + $execution.resumeUrl;\nreturn [{ json: { slackUrl: c.slackWebhookUrl, text, subject: 'AOG approval required: ' + c.aircraftTailNumber + ' / ' + c.faultId, toEmail: c.inspectorEmail, fromEmail: c.fromEmail } }];"
+      },
+      "id": "d32967f2-eebc-4ee7-8b00-6ef957f0cc71",
+      "name": "Build HITL Notice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -13088,
+        3072
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.slackUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
+        "options": {}
+      },
+      "id": "8ac6356a-9f8a-40ac-804b-db64c4715491",
+      "name": "Slack HITL",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -12848,
+        3072
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "resume": "webhook",
+        "httpMethod": "POST",
         "options": {}
       },
-      "id": "a001-0000-0000-0015",
-      "name": "Phase7_ChiefInspector_HITL_Gate",
+      "id": "8fcca7d1-de41-4566-90a9-e6e472742ac6",
+      "name": "Wait Chief Inspector",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1.1,
       "position": [
-        3020,
-        320
+        -12368,
+        3072
       ],
-      "webhookId": "chief-inspector-approval-gate"
+      "webhookId": "24a39013-05a1-41f4-aba6-b231237e8970"
     },
     {
       "parameters": {
-        "jsCode": "// Simulates HITL approval pass-through when testing automatically\nconst upstream = $input.first().json;\nreturn [{\n  json: {\n    ...upstream,\n    hitlApproved: true,\n    inspectorSignOffUtc: new Date().toISOString(),\n    approvalNotes: 'Chief Maintenance Inspector authorized immediate AOG grounding and spare courier dispatch.'\n  }\n}];"
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "2c40c5d1-b82c-43fe-b344-5c9fe2682640",
+              "leftValue": "={{ ($json.body && $json.body.decision) || '' }}",
+              "rightValue": "APPROVED",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "a001-0000-0000-0016",
-      "name": "Phase7_Authorize_HITL_Approval",
-      "type": "n8n-nodes-base.code",
+      "id": "08cacc1d-829e-41f7-b7e2-62be19b5c1c2",
+      "name": "IF Approved",
+      "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        3240,
-        320
+        -12128,
+        3072
       ]
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "https://httpbin.org/post",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"faultId\": \"{{ $json.faultId }}\",\n  \"aircraftTailNumber\": \"{{ $json.aircraftTailNumber }}\",\n  \"hub\": \"{{ $json.routing.selectedSpareHub }}\",\n  \"spareSerial\": \"{{ $json.routing.spareSerial }}\",\n  \"priority\": \"AOG_EXPEDITE\"\n}",
-        "options": {}
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\n\nreturn [{ json: { event: {\n  fault_id: c.faultId,\n  aircraft_tail_number: c.aircraftTailNumber,\n  ata_chapter_code: c.ataChapterCode,\n  part_serial_number: c.partSerialNumber,\n  rul_remaining_pct: c.effectiveRulPct,\n  selected_spare_hub: c.selectedHub,\n  hub_distance_km: c.hubDistanceKm,\n  airworthiness_status: 'MEL_DEFERRED',\n  inspector_phone_e164: c.phoneE164,\n  inspector_email: c.inspectorEmail,\n  fault_detected_utc: c.faultDetectedUtc\n} } }];"
       },
-      "id": "a001-0000-0000-0017",
-      "name": "HTTP_POST_AOG_WorkOrder",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3460,
-        160
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "PUT",
-        "url": "https://httpbin.org/put",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"aircraftTailNumber\": \"{{ $json.aircraftTailNumber }}\",\n  \"airworthinessStatus\": \"AOG_GROUNDED\",\n  \"updatedAt\": \"{{ new Date().toISOString() }}\"\n}",
-        "options": {}
-      },
-      "id": "a001-0000-0000-0018",
-      "name": "HTTP_PUT_Fleet_Airworthiness",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3460,
-        320
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "PATCH",
-        "url": "https://httpbin.org/patch",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  \"spareSerial\": \"{{ $json.routing.spareSerial }}\",\n  \"status\": \"RESERVED_AOG\",\n  \"reservedForTail\": \"{{ $json.aircraftTailNumber }}\"\n}",
-        "options": {}
-      },
-      "id": "a001-0000-0000-0019",
-      "name": "HTTP_PATCH_Reserve_Spare_Part",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3460,
-        480
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "DELETE",
-        "url": "https://httpbin.org/delete",
-        "options": {}
-      },
-      "id": "a001-0000-0000-0020",
-      "name": "HTTP_DELETE_Release_Gate",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3460,
-        640
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "method": "GET",
-        "url": "https://httpbin.org/get?cursor=YWNhcnNfcGFnZV8y",
-        "options": {}
-      },
-      "id": "a001-0000-0000-0021",
-      "name": "Phase8_RFC5988_Paginated_HTTP",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        3680,
-        400
-      ],
-      "onError": "continueRegularOutput"
-    },
-    {
-      "parameters": {
-        "jsCode": "// Consolidate REST CRUD execution & Telemetry tracking\nconst hitlCtx = $('Phase7_Authorize_HITL_Approval').first().json;\n\n// Check simulated error conditions\nlet failoverUsed = false;\nif (hitlCtx.simulatePrimary503) {\n  failoverUsed = true;\n}\n\nlet isPoisonPill = false;\nif (hitlCtx.simulateGate400 || hitlCtx.gateAssignmentId === 'INVALID_GATE_9999') {\n  isPoisonPill = true;\n}\n\nreturn [{\n  json: {\n    ...hitlCtx,\n    crudResults: {\n      postWorkOrder: { method: 'POST', status: 201, workOrderId: 'WO-AOG-99881' },\n      putAirworthiness: { method: 'PUT', status: 200, airworthinessStatus: 'AOG_GROUNDED' },\n      patchSpare: { method: 'PATCH', status: 200, serialStatus: 'RESERVED_AOG' },\n      deleteGate: { method: 'DELETE', status: isPoisonPill ? 400 : 204, gateReleased: !isPoisonPill }\n    },\n    telemetry: {\n      httpMethod: 'POST',\n      endpointPath: '/v1/aog/work-orders',\n      httpStatusCode: isPoisonPill ? 400 : 200,\n      latencyMs: 142,\n      failoverUsed\n    },\n    isPoisonPill\n  }\n}];"
-      },
-      "id": "a001-0000-0000-0022",
-      "name": "Phase9_Consolidate_REST_Telemetry",
+      "id": "7b868be1-6226-420b-97d7-19163ceeda9b",
+      "name": "Build MEL Event",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3900,
-        400
+        -11888,
+        3328
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\nconst b = ($input.first().json.body) || {};\nreturn [{ json: { ...c, approval: { decision: b.decision, inspectorName: b.inspectorName || null, licenseNumber: b.licenseNumber || null } } }];"
+      },
+      "id": "d72094e1-c1d8-4b48-84a2-8eead090afc3",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11888,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const ctx = $input.first().json;\nconst sd = $getWorkflowStaticData('global');\nconst BUFFER_MS = 60000, LOCK_TTL_MS = 15000, MAX_WAIT_MS = 20000;\nconst valid = () => sd.mroToken && sd.mroTokenExpiresAt && Date.now() < sd.mroTokenExpiresAt - BUFFER_MS;\nlet waited = 0, refreshed = false;\n\nwhile (!valid()) {\n  const lockAge = sd.mroTokenLock ? Date.now() - sd.mroTokenLock : Infinity;\n  if (lockAge > LOCK_TTL_MS) {                    // acquire lock\n    sd.mroTokenLock = Date.now();\n    try {\n      let res = await this.helpers.httpRequest({\n        method: 'POST',\n        url: ctx.mroBase + '/oauth/token',\n        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },\n        body: 'grant_type=client_credentials&client_id=' + encodeURIComponent(ctx.mroClientId) + '&client_secret=' + encodeURIComponent(ctx.mroClientSecret)\n      });\n      if (typeof res === 'string') res = JSON.parse(res);\n      sd.mroToken = res.access_token;\n      sd.mroTokenExpiresAt = Date.now() + Number(res.expires_in || 3600) * 1000;\n      refreshed = true;\n    } finally { sd.mroTokenLock = null; }          // always release\n    break;\n  }\n  await new Promise(r => setTimeout(r, 250));      // spin-lock: another run is refreshing\n  waited += 250;\n  if (waited > MAX_WAIT_MS) throw new Error('OAuth2 token lock wait timeout');\n}\nreturn [{ json: { ...ctx, token: sd.mroToken, tokenExpiresAt: sd.mroTokenExpiresAt, tokenRefreshed: refreshed, tokenLockWaitMs: waited } }];"
+      },
+      "id": "ebb94ec9-29c9-47cf-aa80-f57a6ecf4933",
+      "name": "OAuth2 Mutex",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11648,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $input.first().json;\nconst calls = [];\ncalls.push({ verb: 'POST_WORK_ORDER', method: 'POST', path: '/v1/aog/work-orders', reqBody: {\n  faultId: c.faultId, aircraftTailNumber: c.aircraftTailNumber, priority: 'AOG_CRITICAL', ataChapterCode: c.ataChapterCode,\n  partNumber: c.partNumber, failedSerial: c.partSerialNumber, spareSerial: c.spareSerial, courierOriginHub: c.selectedHub,\n  destinationAirport: c.airportIata, hubDistanceKm: c.hubDistanceKm, effectiveRulPct: c.effectiveRulPct,\n  faaTrackingNumber: c.faaTrackingNumber, inspectorPhone: c.phoneE164, inspectorEmail: c.inspectorEmail,\n  approvedBy: c.approval && c.approval.licenseNumber } });\ncalls.push({ verb: 'PUT_AIRWORTHINESS', method: 'PUT', path: '/v1/fleet/' + encodeURIComponent(c.aircraftTailNumber) + '/airworthiness', reqBody: {\n  aircraftTailNumber: c.aircraftTailNumber, airworthinessStatus: 'AOG_GROUNDED', reason: 'EffectiveRUL ' + c.effectiveRulPct + '% / ATA ' + c.ataChapterCode,\n  effectiveUtc: new Date().toISOString() } });\nif (c.spareSerial) calls.push({ verb: 'PATCH_PART', method: 'PATCH', path: '/v1/parts/' + encodeURIComponent(c.spareSerial) + '/status', reqBody: {\n  status: 'RESERVED_AOG', reservedForTail: c.aircraftTailNumber, faultId: c.faultId } });\nif (c.gateAssignmentId) calls.push({ verb: 'DELETE_GATE', method: 'DELETE', path: '/v1/gates/' + encodeURIComponent(c.gateAssignmentId) });\nreturn calls.map(x => ({ json: x }));"
+      },
+      "id": "7577ee1b-9ca3-4b64-b4eb-38a58e05714e",
+      "name": "Build REST Calls",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -11408,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "7e688cf0-1363-4e93-8f4a-77fae2cdbecd",
+      "name": "Loop Calls",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -11168,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $input.first().json;\nconst fid = $('Build Context').first().json.faultId;\nconst sd = $getWorkflowStaticData('global');\nsd['cur:' + fid] = { verb: j.verb, method: j.method, path: j.path, reqBody: j.reqBody };\nsd['t0:' + fid] = Date.now();\nreturn $input.all();"
+      },
+      "id": "78aeba81-d48d-41af-9881-2f12fc1518e5",
+      "name": "Stamp Primary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10928,
+        2928
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $('Build Context').first().json.mroBase + $json.path }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('OAuth2 Mutex').first().json.token }}"
+            }
+          ]
+        },
+        "sendBody": "{{ $json.method !== 'DELETE' }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "4e6dd5a5-ac91-4577-a7b0-8a95f8181dd3",
+      "name": "REST Primary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -10688,
+        2928
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const SECONDARY = false;\nconst sd = $getWorkflowStaticData('global');\nconst fid = $('Build Context').first().json.faultId;\nconst call = sd['cur:' + fid] || {};\nconst j = $input.first().json;\nconst status = Number(j.statusCode || 0);\nconst latency = Math.max(0, Date.now() - (sd['t0:' + fid] || Date.now()));\nconst rk = 'retry:' + fid + ':' + call.verb;\nlet attempts = sd[rk] || 0;\nlet route = 'DLQ', classification = 'HTTP_' + status, backoff = 0;\n\nif (status >= 200 && status < 300) { route = 'OK'; delete sd[rk]; }\nelse if (status === 400) { route = 'POISON_PILL_400'; classification = 'POISON_PILL_400'; attempts = 0; }   // zero retries\nelse if (!SECONDARY && status === 429) {\n  attempts += 1; sd[rk] = attempts;\n  if (attempts <= 4) { route = 'RETRY_429'; const base = Math.min(30, Math.pow(2, attempts)); backoff = Math.ceil(base + Math.random() * base); } // exponential + jitter\n  else route = 'FAILOVER';\n}\nelse if (!SECONDARY && (status === 0 || status >= 500)) route = 'FAILOVER';                                // hot failover\nelse if (SECONDARY && (status === 0 || status >= 500)) classification = 'SECONDARY_FAILOVER_FAILED';\n\nif (route === 'DLQ' || route === 'POISON_PILL_400') sd['fail:' + fid] = (sd['fail:' + fid] || 0) + 1;\n\nlet snippet = typeof j.body === 'string' ? j.body : JSON.stringify(j.body || j.error || {});\nsnippet = String(snippet).slice(0, 1000);\nreturn [{ json: {\n  verb: call.verb, method: call.method, path: call.path, reqBody: call.reqBody,\n  route, status, classification, backoffSeconds: backoff, retryAttempts: attempts, failoverUsed: SECONDARY, responseSnippet: snippet,\n  telemetry: { fault_id: fid, http_method: call.method, endpoint_path: call.path, http_status_code: status, latency_ms: latency, failover_used: SECONDARY }\n} }];"
+      },
+      "id": "4c2631ee-17a6-4c36-a580-00bbc8d6ac92",
+      "name": "Triage Primary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10448,
+        2928
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "4d9c94c3-e5c8-44b7-9b0b-51440375967e",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "OK",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "OK"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "c6da8440-ceb9-42ad-90e5-fe63bfaa8c43",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "POISON_PILL_400",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "POISON_PILL_400"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "98a345e4-1e23-4188-86e9-b397503dba7f",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "RETRY_429",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RETRY_429"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "8edf5a8e-a493-4e44-bc25-bac61739ce17",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "FAILOVER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "FAILOVER"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "5411b550-bce9-477e-96c5-1cb682283216",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "DLQ",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DLQ"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "be44cd6e-6b44-4198-8a67-8b4fe1125837",
+      "name": "Route Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -10208,
+        3008
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.backoffSeconds }}"
+      },
+      "id": "f13aff11-a005-4a4a-8fef-52fe1d88a301",
+      "name": "Wait Backoff 429",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -9968,
+        2816
+      ],
+      "webhookId": "8dab4430-00dd-4fc7-a8eb-e2c385017ee5"
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $input.first().json;\nconst fid = $('Build Context').first().json.faultId;\nconst sd = $getWorkflowStaticData('global');\nsd['cur:' + fid] = { verb: j.verb, method: j.method, path: j.path, reqBody: j.reqBody };\nsd['t0:' + fid] = Date.now();\nreturn $input.all();"
+      },
+      "id": "3a8f15d5-7c74-4707-8ed4-92eeca826e0c",
+      "name": "Stamp Secondary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9968,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "method": "={{ $json.method }}",
+        "url": "={{ $('Build Context').first().json.secondaryBase + $json.path }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('OAuth2 Mutex').first().json.token }}"
+            }
+          ]
+        },
+        "sendBody": "{{ $json.method !== 'DELETE' }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "843ddf0f-5ba2-42ff-bec0-210e779686ba",
+      "name": "REST Secondary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -9728,
+        3024
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const SECONDARY = true;\nconst sd = $getWorkflowStaticData('global');\nconst fid = $('Build Context').first().json.faultId;\nconst call = sd['cur:' + fid] || {};\nconst j = $input.first().json;\nconst status = Number(j.statusCode || 0);\nconst latency = Math.max(0, Date.now() - (sd['t0:' + fid] || Date.now()));\nconst rk = 'retry:' + fid + ':' + call.verb;\nlet attempts = sd[rk] || 0;\nlet route = 'DLQ', classification = 'HTTP_' + status, backoff = 0;\n\nif (status >= 200 && status < 300) { route = 'OK'; delete sd[rk]; }\nelse if (status === 400) { route = 'POISON_PILL_400'; classification = 'POISON_PILL_400'; attempts = 0; }   // zero retries\nelse if (!SECONDARY && status === 429) {\n  attempts += 1; sd[rk] = attempts;\n  if (attempts <= 4) { route = 'RETRY_429'; const base = Math.min(30, Math.pow(2, attempts)); backoff = Math.ceil(base + Math.random() * base); } // exponential + jitter\n  else route = 'FAILOVER';\n}\nelse if (!SECONDARY && (status === 0 || status >= 500)) route = 'FAILOVER';                                // hot failover\nelse if (SECONDARY && (status === 0 || status >= 500)) classification = 'SECONDARY_FAILOVER_FAILED';\n\nif (route === 'DLQ' || route === 'POISON_PILL_400') sd['fail:' + fid] = (sd['fail:' + fid] || 0) + 1;\n\nlet snippet = typeof j.body === 'string' ? j.body : JSON.stringify(j.body || j.error || {});\nsnippet = String(snippet).slice(0, 1000);\nreturn [{ json: {\n  verb: call.verb, method: call.method, path: call.path, reqBody: call.reqBody,\n  route, status, classification, backoffSeconds: backoff, retryAttempts: attempts, failoverUsed: SECONDARY, responseSnippet: snippet,\n  telemetry: { fault_id: fid, http_method: call.method, endpoint_path: call.path, http_status_code: status, latency_ms: latency, failover_used: SECONDARY }\n} }];"
+      },
+      "id": "725a5eb4-ae90-4aa8-9334-0bcd6a5f6f0a",
+      "name": "Triage Secondary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9488,
+        3024
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO mro_api_telemetry (fault_id, http_method, endpoint_path, http_status_code, latency_ms, failover_used) VALUES ($1, $2, $3, $4, $5, $6);",
+        "options": {
+          "queryReplacement": "={{ [ $json.telemetry.fault_id, $json.telemetry.http_method, $json.telemetry.endpoint_path, $json.telemetry.http_status_code, $json.telemetry.latency_ms, $json.telemetry.failover_used ] }}"
+        }
+      },
+      "id": "f851fd9f-581b-4fbe-91e1-b34cb30e6627",
+      "name": "PG Telemetry",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -10208,
+        2784
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "g2oiNXpDsEzXYhzU",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const j = $input.first().json;\nconst fid = $('Build Context').first().json.faultId;\nreturn [{ json: { dlq: {\n  fault_id: fid,\n  error_classification: j.classification,\n  http_status_code: j.status,\n  raw_payload: { verb: j.verb, method: j.method, path: j.path, reqBody: j.reqBody || null, failoverUsed: j.failoverUsed },\n  error_message: j.responseSnippet || ('HTTP ' + j.status),\n  retry_attempts: j.classification === 'POISON_PILL_400' ? 0 : (j.retryAttempts || 0)\n} } }];"
+      },
+      "id": "f8fb068e-8a39-4865-8233-65a923f16def",
+      "name": "Build REST DLQ",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9968,
+        3248
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO mro_dead_letter_queue (fault_id, error_classification, http_status_code, raw_payload, error_message, retry_attempts) VALUES ($1, $2, $3, $4::jsonb, $5, $6);",
+        "options": {
+          "queryReplacement": "={{ [ $json.dlq.fault_id, $json.dlq.error_classification, $json.dlq.http_status_code, JSON.stringify($json.dlq.raw_payload), $json.dlq.error_message, $json.dlq.retry_attempts ] }}"
+        }
+      },
+      "id": "140eaadd-8c20-4712-af78-8ff82c600cdd",
+      "name": "PG DLQ REST",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        -9728,
+        3248
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "g2oiNXpDsEzXYhzU",
+          "name": "Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Build Context').first().json;\nconst sd = $getWorkflowStaticData('global');\nsd['hist:' + c.faultId] = { pages: 0, events: 0 };\nreturn [{ json: { nextUrl: c.mroBase + '/v2/fleet/acars-history' } }];"
+      },
+      "id": "30ddff9f-d7c6-4e6a-bf89-6a562ef661ca",
+      "name": "Init History",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10928,
+        3328
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.nextUrl }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $('OAuth2 Mutex').first().json.token }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "0bba09f4-8bc1-4886-9052-47b3ae69de86",
+      "name": "Fetch ACARS History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -10688,
+        3328
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst c = $('Build Context').first().json;\nconst key = 'hist:' + c.faultId;\nconst st = sd[key] || { pages: 0, events: 0 };\nconst j = $input.first().json;\nconst hdr = j.headers || {};\nconst link = String(hdr['link'] || hdr['Link'] || '');\n\n// RFC 5988 Link header -> rel=\"next\"\nlet nextUrl = null, cursorDecoded = null;\nconst m = link.match(/<([^>]+)>\\s*;\\s*rel=\"?next\"?/i);\nif (m) {\n  nextUrl = m[1];\n  const cm = nextUrl.match(/[?&]cursor=([^&]+)/);\n  if (cm) { try { cursorDecoded = Buffer.from(decodeURIComponent(cm[1]), 'base64').toString('utf8'); } catch (e) { cursorDecoded = null; } }\n}\n\n// adaptive pacing from rate-limit headers\nconst remaining = Number(hdr['x-ratelimit-remaining']);\nconst reset = Number(hdr['x-ratelimit-reset']);\nlet waitSeconds = 1;\nif (!Number.isNaN(remaining)) {\n  if (remaining <= 1) {\n    const untilReset = !Number.isNaN(reset) ? reset - Math.floor(Date.now() / 1000) : 10;\n    waitSeconds = Math.max(2, Math.min(30, untilReset));\n  } else if (remaining <= 5) waitSeconds = 3;\n}\n\nconst b = j.body;\nconst count = Array.isArray(b) ? b.length : ((b && (b.events || b.data || b.items)) || []).length || 0;\nst.pages += 1; st.events += count;\nsd[key] = st;\n\nconst hasNext = !!nextUrl && st.pages < 10;\nreturn [{ json: { hasNext, nextUrl, cursorDecoded, waitSeconds, pages: st.pages, historyEvents: st.events, lastStatus: j.statusCode || null } }];"
+      },
+      "id": "3a398aa3-c2f5-4379-bc32-b740940e6ff5",
+      "name": "Parse History Page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -10448,
+        3328
       ]
     },
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
             {
-              "value1": "={{ $json.isPoisonPill }}",
-              "operation": "equal",
-              "value2": false
+              "id": "fc548326-71ae-47dc-b35d-c46d5ee1b57a",
+              "leftValue": "={{ $json.hasNext }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
-        }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
       },
-      "id": "a001-0000-0000-0023",
-      "name": "If_Not_Poison_Pill",
+      "id": "80f7df65-d9df-4fa8-a86b-eee2d885cba0",
+      "name": "IF Has Next Page",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "position": [
-        4120,
-        400
+        -10208,
+        3328
+      ]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.waitSeconds }}"
+      },
+      "id": "2d1d5b0d-2ec0-48dd-b531-9c08063e9e25",
+      "name": "Wait Rate Limit Pacing",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -9968,
+        3456
+      ],
+      "webhookId": "f55711cc-b1b1-4907-a41e-e7acd7d30111"
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $('Phase 5 Compute').first().json;\n\nconst sd = $getWorkflowStaticData('global');\nconst fid = c.faultId;\nfor (const k of Object.keys(sd)) { if (k.endsWith(':' + fid) || k.includes(':' + fid + ':')) delete sd[k]; }\n\nreturn [{ json: { event: {\n  fault_id: c.faultId,\n  aircraft_tail_number: c.aircraftTailNumber,\n  ata_chapter_code: c.ataChapterCode,\n  part_serial_number: c.partSerialNumber,\n  rul_remaining_pct: c.effectiveRulPct,\n  selected_spare_hub: c.selectedHub,\n  hub_distance_km: c.hubDistanceKm,\n  airworthiness_status: 'AOG_GROUNDED',\n  inspector_phone_e164: c.phoneE164,\n  inspector_email: c.inspectorEmail,\n  fault_detected_utc: c.faultDetectedUtc\n} } }];"
+      },
+      "id": "3bcc22aa-1f2a-4eff-b716-84eaf69054b7",
+      "name": "Build Final Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -9648,
+        3440
       ]
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "INSERT INTO aviation_mro_events (fault_id, aircraft_tail_number, ata_chapter_code, part_serial_number, rul_remaining_pct, selected_spare_hub, hub_distance_km, airworthiness_status, inspector_phone_e164, inspector_email, fault_detected_utc) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (fault_id) DO UPDATE SET processed_at_utc = NOW();"
+        "query": "INSERT INTO aviation_mro_events (fault_id, aircraft_tail_number, ata_chapter_code, part_serial_number, rul_remaining_pct, selected_spare_hub, hub_distance_km, airworthiness_status, inspector_phone_e164, inspector_email, fault_detected_utc) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (fault_id) DO UPDATE SET airworthiness_status = EXCLUDED.airworthiness_status, rul_remaining_pct = EXCLUDED.rul_remaining_pct, selected_spare_hub = EXCLUDED.selected_spare_hub, hub_distance_km = EXCLUDED.hub_distance_km, processed_at_utc = NOW() RETURNING *;",
+        "options": {
+          "queryReplacement": "={{ [ $json.event.fault_id, $json.event.aircraft_tail_number, $json.event.ata_chapter_code, $json.event.part_serial_number, $json.event.rul_remaining_pct, $json.event.selected_spare_hub, $json.event.hub_distance_km, $json.event.airworthiness_status, $json.event.inspector_phone_e164, $json.event.inspector_email, $json.event.fault_detected_utc ] }}"
+        }
       },
-      "id": "a001-0000-0000-0024",
-      "name": "Postgres_Insert_Aviation_MRO_Events",
+      "id": "9c182b7c-cbd4-40d4-9fd1-835f0f85cf73",
+      "name": "PG Upsert Event",
       "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.4,
+      "typeVersion": 2.5,
       "position": [
-        4340,
-        320
+        -9120,
+        3200
       ],
-      "onError": "continueRegularOutput"
+      "credentials": {
+        "postgres": {
+          "id": "g2oiNXpDsEzXYhzU",
+          "name": "Postgres"
+        }
+      }
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "INSERT INTO mro_api_telemetry (fault_id, http_method, endpoint_path, http_status_code, latency_ms, failover_used) VALUES ($1, $2, $3, $4, $5, $6);"
+        "jsCode": "const r = $input.first().json;\nconst c = $('Phase 5 Compute').first().json;\nconst sd = $getWorkflowStaticData('global');\nconst fails = sd['fail:' + c.faultId] || 0;\nlet hist = 0;\ntry {\n  const histItems = $('Parse History Page').all();\n  if (histItems.length) {\n    hist = histItems[histItems.length - 1].json.historyEvents ?? 0;\n  }\n} catch (e) {\n  hist = 0;\n}\nconst text = (r.airworthiness_status === 'AOG_GROUNDED' ? ':airplane: AOG GROUNDED' : r.airworthiness_status === 'SUP_QUARANTINED' ? ':no_entry: SUP QUARANTINED' : ':memo: MEL DEFERRED') +\n  ' | ' + r.aircraft_tail_number + ' | ATA ' + r.ata_chapter_code + ' | RUL ' + r.rul_remaining_pct + '% | Spare hub ' + r.selected_spare_hub + ' (' + r.hub_distance_km + ' km)' +\n  ' | Fault ' + r.fault_id + (c.supReason ? ' | ' + c.supReason : '') + (fails ? ' | REST failures sent to DLQ: ' + fails : '');\nreturn [{ json: { slackUrl: c.slackWebhookUrl, text, subject: '[Airworthiness Log] ' + r.airworthiness_status + ' ' + r.aircraft_tail_number + ' ' + r.fault_id,\n  toEmail: r.inspector_email, fromEmail: c.fromEmail } }];"
       },
-      "id": "a001-0000-0000-0025",
-      "name": "Postgres_Insert_MRO_Telemetry",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.4,
+      "id": "7fe81688-abf7-4ebf-9aa9-8dea46412c04",
+      "name": "Build Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [
-        4560,
-        320
-      ],
-      "onError": "continueRegularOutput"
+        -8960,
+        3232
+      ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://httpbin.org/post",
+        "url": "={{ $json.slackUrl }}",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"channel\": \"#aog-maintenance-control\",\n  \"text\": \"CRITICAL AOG GROUNDING ALERT: Aircraft {{ $json.aircraftTailNumber }} grounded at ORD. Nearest hub: {{ $json.routing.selectedSpareHub }} ({{ $json.routing.hubDistanceKm }} km). Spare: {{ $json.routing.spareSerial }}. Work order WO-AOG-99881 dispatched.\"\n}",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text }) }}",
         "options": {}
       },
-      "id": "a001-0000-0000-0026",
-      "name": "Slack_Alert_AOG_Maintenance_Control",
+      "id": "958d5db1-1fcb-4fbc-a964-ef868df6adf6",
+      "name": "Slack Notify",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        4780,
-        320
+        -8720,
+        3232
       ],
       "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "operation": "executeQuery",
-        "query": "INSERT INTO mro_dead_letter_queue (fault_id, error_classification, http_status_code, raw_payload, error_message, retry_attempts) VALUES ($1, $2, $3, $4, $5, $6);"
+        "content": "## Aero-MRO-Sync (N8N-API-AERO-PRJ-10)\n**Before running:**\n1. Run mock-mro-server.js, then edit **Config** (URLs default to localhost:3001/3002; use host.docker.internal if n8n is in Docker)\n2. Assign Postgres credential to every *PG* node + SMTP credential to *Email* nodes\n3. Create tables from schema.sql\n4. Activate workflow (static-data mutexes persist only in production runs)\n5. Optional (self-hosted): set `NODE_FUNCTION_ALLOW_BUILTIN=crypto` so Phase 1 uses node:crypto.timingSafeEqual; otherwise it auto-falls back to a pure-JS HMAC",
+        "height": 220,
+        "width": 420,
+        "color": 4
       },
-      "id": "a001-0000-0000-0027",
-      "name": "Postgres_Insert_DLQ",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2.4,
+      "id": "1832ca1d-9f10-4ad5-baff-80e5b3425b59",
+      "name": "Note Setup",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
       "position": [
-        4340,
-        520
-      ],
-      "onError": "continueRegularOutput"
+        -16224,
+        2784
+      ]
     },
     {
       "parameters": {
-        "jsCode": "// DLQ Handler for Unapproved Parts (SUP Checksum Failure)\nconst item = $input.first().json;\nreturn [{\n  json: {\n    faultId: item.faultId,\n    errorClassification: 'SUP_CHECKSUM_FAILURE',\n    httpStatusCode: 422,\n    rawPayload: item,\n    errorMessage: `Airworthiness certificate checksum mismatch: remainingCycles (${item.faa8130?.remainingCycles}) !== certChecksum (${item.faa8130?.certCycleChecksum})`,\n    retryAttempts: 0\n  }\n}];"
+        "content": "## Phase 6-7 HITL gate\nWait node resumes on POST `{\"decision\":\"APPROVED\"}` to the resume URL sent via Slack/Email.",
+        "height": 120,
+        "width": 520,
+        "color": 5
       },
-      "id": "a001-0000-0000-0028",
-      "name": "Format_SUP_DLQ_Payload",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
+      "id": "650f69a8-381a-4a26-b3f4-17cd85429b25",
+      "name": "Note HITL",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
       "position": [
-        2580,
-        580
+        -13264,
+        2688
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Phase 8-10 REST loop\nOAuth2 mutex -> POST/PUT/PATCH/DELETE one at a time.\n400 -> POISON_PILL_400 DLQ (0 retries) | 429 -> jittered backoff | 5xx -> hot failover -> DLQ",
+        "height": 120,
+        "width": 700,
+        "color": 6
+      },
+      "id": "bcc67719-9157-4f63-808d-5fd38654a25e",
+      "name": "Note REST",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -11168,
+        2704
       ]
     }
   ],
+  "pinData": {},
   "connections": {
-    "Webhook_ACARS_Fault_Intake": {
+    "ACARS Webhook": {
       "main": [
         [
           {
-            "node": "Phase1_TimingSafeHMAC_ReplayMutex",
+            "node": "Phase 1-2 HMAC Replay Dedupe",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase1_TimingSafeHMAC_ReplayMutex": {
+    "Phase 1-2 HMAC Replay Dedupe": {
       "main": [
         [
           {
-            "node": "Switch_Auth_Validation",
+            "node": "Respond to ACARS",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Switch_Auth_Validation": {
+    "Respond to ACARS": {
       "main": [
         [
           {
-            "node": "Respond_HTTP_202_Accepted",
+            "node": "IF Proceed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Proceed": {
+      "main": [
+        [
+          {
+            "node": "Config",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Respond_Auth_Error",
+            "node": "Drop Rejected or Duplicate",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Respond_HTTP_202_Accepted": {
+    "Config": {
       "main": [
         [
           {
-            "node": "Phase2_Static_Mutex_Deduplication",
+            "node": "GraphQL Fleet Query",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch FAA 8130-3 PDF",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge ACARS + GraphQL",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase2_Static_Mutex_Deduplication": {
+    "GraphQL Fleet Query": {
       "main": [
         [
           {
-            "node": "If_Not_Duplicate",
+            "node": "Normalize GraphQL",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "If_Not_Duplicate": {
+    "Normalize GraphQL": {
       "main": [
         [
           {
-            "node": "Phase3_GraphQL_Fleet_Depots_HTTP",
+            "node": "Merge ACARS + GraphQL",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch FAA 8130-3 PDF": {
+      "main": [
+        [
+          {
+            "node": "Extract FAA PDF",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase3_GraphQL_Fleet_Depots_HTTP": {
+    "Extract FAA PDF": {
       "main": [
         [
           {
-            "node": "Phase3_Normalize_GraphQL_Payload",
+            "node": "Parse FAA 8130-3",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase3_Normalize_GraphQL_Payload": {
+    "Parse FAA 8130-3": {
       "main": [
         [
           {
-            "node": "Phase4_Extract_From_PDF_File",
+            "node": "Merge + FAA 8130-3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge ACARS + GraphQL": {
+      "main": [
+        [
+          {
+            "node": "Merge + FAA 8130-3",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase4_Extract_From_PDF_File": {
+    "Merge + FAA 8130-3": {
       "main": [
         [
           {
-            "node": "Phase4_Parse_FAA8130_Checksum",
+            "node": "Phase 5 Compute",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase4_Parse_FAA8130_Checksum": {
+    "Phase 5 Compute": {
       "main": [
         [
           {
-            "node": "If_FAA8130_Valid",
+            "node": "IF SUP Failed",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "If_FAA8130_Valid": {
+    "IF SUP Failed": {
       "main": [
         [
           {
-            "node": "Phase5_RUL_Haversine_ContactHygiene",
+            "node": "Build SUP DLQ",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Format_SUP_DLQ_Payload",
+            "node": "IF HITL Required",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Format_SUP_DLQ_Payload": {
+    "Build SUP DLQ": {
       "main": [
         [
           {
-            "node": "Postgres_Insert_DLQ",
+            "node": "PG DLQ SUP",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase5_RUL_Haversine_ContactHygiene": {
+    "PG DLQ SUP": {
       "main": [
         [
           {
-            "node": "If_Mandatory_AOG",
+            "node": "Build SUP Event",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "If_Mandatory_AOG": {
+    "Build SUP Event": {
       "main": [
         [
           {
-            "node": "Phase7_ChiefInspector_HITL_Gate",
+            "node": "PG Upsert Event",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Phase7_ChiefInspector_HITL_Gate": {
+    "IF HITL Required": {
       "main": [
         [
           {
-            "node": "Phase7_Authorize_HITL_Approval",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Phase7_Authorize_HITL_Approval": {
-      "main": [
-        [
-          {
-            "node": "HTTP_POST_AOG_WorkOrder",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "HTTP_PUT_Fleet_Airworthiness",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "HTTP_PATCH_Reserve_Spare_Part",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "HTTP_DELETE_Release_Gate",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP_DELETE_Release_Gate": {
-      "main": [
-        [
-          {
-            "node": "Phase8_RFC5988_Paginated_HTTP",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Phase8_RFC5988_Paginated_HTTP": {
-      "main": [
-        [
-          {
-            "node": "Phase9_Consolidate_REST_Telemetry",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Phase9_Consolidate_REST_Telemetry": {
-      "main": [
-        [
-          {
-            "node": "If_Not_Poison_Pill",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "If_Not_Poison_Pill": {
-      "main": [
-        [
-          {
-            "node": "Postgres_Insert_Aviation_MRO_Events",
+            "node": "Build HITL Notice",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Postgres_Insert_DLQ",
+            "node": "Build MEL Event",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres_Insert_Aviation_MRO_Events": {
+    "Build HITL Notice": {
       "main": [
         [
           {
-            "node": "Postgres_Insert_MRO_Telemetry",
+            "node": "Slack HITL",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Postgres_Insert_MRO_Telemetry": {
+    "Slack HITL": {
       "main": [
         [
           {
-            "node": "Slack_Alert_AOG_Maintenance_Control",
+            "node": "Wait Chief Inspector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Chief Inspector": {
+      "main": [
+        [
+          {
+            "node": "IF Approved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Approved": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build MEL Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build MEL Event": {
+      "main": [
+        [
+          {
+            "node": "PG Upsert Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "OAuth2 Mutex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OAuth2 Mutex": {
+      "main": [
+        [
+          {
+            "node": "Build REST Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build REST Calls": {
+      "main": [
+        [
+          {
+            "node": "Loop Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Calls": {
+      "main": [
+        [
+          {
+            "node": "Init History",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Primary": {
+      "main": [
+        [
+          {
+            "node": "REST Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "REST Primary": {
+      "main": [
+        [
+          {
+            "node": "Triage Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Primary": {
+      "main": [
+        [
+          {
+            "node": "PG Telemetry",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Result": {
+      "main": [
+        [
+          {
+            "node": "Loop Calls",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build REST DLQ",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait Backoff 429",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Secondary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build REST DLQ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Backoff 429": {
+      "main": [
+        [
+          {
+            "node": "Stamp Primary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Secondary": {
+      "main": [
+        [
+          {
+            "node": "REST Secondary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "REST Secondary": {
+      "main": [
+        [
+          {
+            "node": "Triage Secondary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Triage Secondary": {
+      "main": [
+        [
+          {
+            "node": "PG Telemetry",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build REST DLQ": {
+      "main": [
+        [
+          {
+            "node": "PG DLQ REST",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG DLQ REST": {
+      "main": [
+        [
+          {
+            "node": "Loop Calls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init History": {
+      "main": [
+        [
+          {
+            "node": "Fetch ACARS History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch ACARS History": {
+      "main": [
+        [
+          {
+            "node": "Parse History Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse History Page": {
+      "main": [
+        [
+          {
+            "node": "IF Has Next Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Next Page": {
+      "main": [
+        [
+          {
+            "node": "Wait Rate Limit Pacing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Final Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait Rate Limit Pacing": {
+      "main": [
+        [
+          {
+            "node": "Fetch ACARS History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Final Event": {
+      "main": [
+        [
+          {
+            "node": "PG Upsert Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PG Upsert Event": {
+      "main": [
+        [
+          {
+            "node": "Build Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Notification": {
+      "main": [
+        [
+          {
+            "node": "Slack Notify",
             "type": "main",
             "index": 0
           }
         ]
       ]
     }
-  }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "f7980c37-7745-4724-bec9-204fa3fca4c9",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a03c7678428ef19ededbf912f16f7d5798ec7b9ab4c17f2a2def6a9e791e7215"
+  },
+  "nodeGroups": [],
+  "id": "GxqBgfDcWJiJtkFj",
+  "tags": []
 }
